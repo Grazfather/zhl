@@ -9,7 +9,13 @@ const ansi_color_start = ansi_escape ++ "[38;5;{}m";
 const ansi_color_end = ansi_escape ++ "[0m";
 const colorize_fmt_string = std.fmt.comptimePrint("{s}{{s}}{s}", .{ ansi_color_start, ansi_color_end });
 
-fn colorize_line(allocator: Allocator, line: []const u8, regex: *const mvzr.Regex, grep: bool) !?[]const u8 {
+fn colorize_line(
+    allocator: Allocator,
+    line: []const u8,
+    regex: *const mvzr.Regex,
+    grep: bool,
+    matches_only: bool,
+) !?[]const u8 {
     var start: usize = 0;
     var output = try std.ArrayList(u8).initCapacity(allocator, line.len);
 
@@ -20,7 +26,8 @@ fn colorize_line(allocator: Allocator, line: []const u8, regex: *const mvzr.Rege
         // Get the color for the current match
         const color = get_color(match.slice);
         // Append everything from the end of the last match to the start of the current
-        try output.appendSlice(line[start..match.start]);
+        if (!matches_only)
+            try output.appendSlice(line[start..match.start]);
         // Append the colorized match
         try output.writer().print(ansi_color_start, .{color});
         try output.appendSlice(match.slice);
@@ -36,7 +43,8 @@ fn colorize_line(allocator: Allocator, line: []const u8, regex: *const mvzr.Rege
     }
 
     // Append everything after the last match
-    try output.appendSlice(line[start..]);
+    if (!matches_only)
+        try output.appendSlice(line[start..]);
     return output.items;
 }
 
@@ -61,6 +69,7 @@ pub fn main() !void {
         \\-w, --words            Highlight (regex) words
         \\-x, --hexnumbers       Highlight hex numbers
         \\-g, --grep             Only print matching lines
+        \\-m, --matchesonly      Only print matches
         \\
     );
 
@@ -83,6 +92,7 @@ pub fn main() !void {
     }
 
     var grep = false;
+    var matches_only = false;
     var pattern: []const u8 = undefined;
     if (res.args.pattern) |p| {
         pattern = p;
@@ -91,12 +101,19 @@ pub fn main() !void {
     } else if (res.args.words != 0) {
         pattern = "\\w+";
     } else if (res.args.hexnumbers != 0) {
+        // mvzr doesn't support non capture groups
+        // pattern = "\\b(?:0x)?[a-fA-F\\d]{2,}\\b";
+        // This is broken
+        // pattern = "0x[a-fA-F0-9]{2,}|[a-fA-F0-9]{2,}";
         pattern = "0x[a-fA-F0-9]{2,}]";
     } else {
         return clap.usage(std.io.getStdErr().writer(), clap.Help, &params);
     }
 
     if (res.args.grep == 1) {
+        grep = true;
+    } else if (res.args.matchesonly == 1) {
+        matches_only = true;
         grep = true;
     }
 
@@ -109,7 +126,7 @@ pub fn main() !void {
     var buf: [16 * 1024]u8 = undefined;
 
     while (try stdin.readUntilDelimiterOrEof(&buf, '\n')) |line| {
-        const colorized_line = try colorize_line(allocator, line, &regex, grep);
+        const colorized_line = try colorize_line(allocator, line, &regex, grep, matches_only);
         if (colorized_line) |cl| {
             _ = try stdout.print("{s}\n", .{cl});
         }
