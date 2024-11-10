@@ -17,6 +17,7 @@ fn colorize_line(
 ) !?[]const u8 {
     var start: usize = 0;
     var output = try std.ArrayList(u8).initCapacity(allocator, line.len);
+    defer output.deinit();
 
     var matched = false;
     var it = regex.iterator(line);
@@ -37,14 +38,13 @@ fn colorize_line(
 
     // If we are grepping, but this line doesn't have a match, then we are done
     if (!matched and grep) {
-        allocator.free(output.items);
         return undefined;
     }
 
     // Append everything after the last match
     if (!matches_only)
         try output.appendSlice(line[start..]);
-    return output.items;
+    return try output.toOwnedSlice();
 }
 
 fn get_color(s: []const u8) u8 {
