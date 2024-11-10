@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const mvzr = @import("mvzr.zig");
+const mvzr = @import("mvzr");
 const Crc = std.hash.crc.Crc16DectX;
 const clap = @import("clap");
 
@@ -101,11 +101,9 @@ pub fn main() !void {
     } else if (res.args.words != 0) {
         pattern = "\\w+";
     } else if (res.args.hexnumbers != 0) {
-        // mvzr doesn't support non capture groups
+        // mvzr doesn't support non capture groups, so we or two patterns
         // pattern = "\\b(?:0x)?[a-fA-F\\d]{2,}\\b";
-        // This is broken
-        // pattern = "0x[a-fA-F0-9]{2,}|[a-fA-F0-9]{2,}";
-        pattern = "0x[a-fA-F0-9]{2,}]";
+        pattern = "0x[a-fA-F0-9]{2,}|[a-fA-F0-9]{2,}";
     } else {
         return clap.usage(std.io.getStdErr().writer(), clap.Help, &params);
     }

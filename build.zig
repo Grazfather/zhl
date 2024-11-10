@@ -13,6 +13,8 @@ pub fn build(b: *std.Build) void {
 
     const clap = b.dependency("clap", .{});
     exe.root_module.addImport("clap", clap.module("clap"));
+    const mvzr = b.dependency("mvzr", .{});
+    exe.root_module.addImport("mvzr", mvzr.module("mvzr"));
 
     b.installArtifact(exe);
     const run_cmd = b.addRunArtifact(exe);
