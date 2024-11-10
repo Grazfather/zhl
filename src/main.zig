@@ -1,16 +1,15 @@
 const std = @import("std");
-const Allocator = std.mem.Allocator;
-const mvzr = @import("mvzr");
 const Crc = std.hash.crc.Crc16DectX;
+
+const mvzr = @import("mvzr");
 const clap = @import("clap");
 
 const ansi_escape = "\x1b";
 const ansi_color_start = ansi_escape ++ "[38;5;{}m";
 const ansi_color_end = ansi_escape ++ "[0m";
-const colorize_fmt_string = std.fmt.comptimePrint("{s}{{s}}{s}", .{ ansi_color_start, ansi_color_end });
 
 fn colorize_line(
-    allocator: Allocator,
+    allocator: std.mem.Allocator,
     line: []const u8,
     regex: *const mvzr.Regex,
     grep: bool,
@@ -53,6 +52,26 @@ fn get_color(s: []const u8) u8 {
     return @as(u8, @truncate(hash)) % 200 + 16;
 }
 
+fn process(
+    allocator: std.mem.Allocator,
+    reader: *const std.io.AnyReader,
+    writer: *const std.io.AnyWriter,
+    regex: mvzr.Regex,
+    grep: bool,
+    matches_only: bool,
+) !void {
+    // Allocate enough to read a whole line
+    var buf: [16 * 1024]u8 = undefined;
+
+    while (try reader.readUntilDelimiterOrEof(&buf, '\n')) |line| {
+        const colorized_line = try colorize_line(allocator, line, &regex, grep, matches_only);
+        if (colorized_line) |cl| {
+            _ = try writer.print("{s}\n", .{cl});
+            allocator.free(cl);
+        }
+    }
+}
+
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -60,7 +79,7 @@ pub fn main() !void {
 
     const stdout = std.io.getStdOut().writer();
     var br = std.io.bufferedReader(std.io.getStdIn().reader());
-    var stdin = br.reader();
+    const stdin = br.reader();
 
     const params = comptime clap.parseParamsComptime(
         \\-h, --help             Display this help and exit.
@@ -120,14 +139,5 @@ pub fn main() !void {
         std.process.exit(1);
     };
 
-    // Allocate enough to read a whole line
-    var buf: [16 * 1024]u8 = undefined;
-
-    while (try stdin.readUntilDelimiterOrEof(&buf, '\n')) |line| {
-        const colorized_line = try colorize_line(allocator, line, &regex, grep, matches_only);
-        if (colorized_line) |cl| {
-            _ = try stdout.print("{s}\n", .{cl});
-        }
-        _ = arena.reset(.{ .retain_with_limit = 1 });
-    }
+    try process(allocator, &stdin.any(), &stdout.any(), regex, grep, matches_only);
 }
