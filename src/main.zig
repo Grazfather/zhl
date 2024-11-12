@@ -170,3 +170,38 @@ test "test input/output" {
         try std.testing.expectEqual(std.mem.count(u8, out_stream.buffer, ansi_color_end), tc.match_count);
     }
 }
+
+test "test colorize functionality" {
+    const tcs = [_]struct {
+        input: []const u8,
+        regex: []const u8,
+        grep: bool,
+        mo: bool,
+        expect_back: bool,
+    }{
+        // No match, but no grep or matches only, returns original line
+        .{ .input = "Hello\n", .regex = "xxx", .grep = false, .mo = false, .expect_back = true },
+        // Match, with grep, returns colorized line
+        .{ .input = "Hello\n", .regex = "l", .grep = true, .mo = false, .expect_back = true },
+        // Match, with match only, returns colorized match
+        .{ .input = "Hello\n", .regex = "l", .grep = false, .mo = true, .expect_back = true },
+        // No match, with grep, returns nothing
+        .{ .input = "Hello\n", .regex = "xxx", .grep = true, .mo = false, .expect_back = false },
+        // No match, with matches only, returns original line
+        .{ .input = "Hello\n", .regex = "xxx", .grep = false, .mo = true, .expect_back = true },
+    };
+    for (tcs) |tc| {
+        const regex = mvzr.compile(tc.regex).?;
+        const rv = try colorize_line(std.testing.allocator, tc.input, &regex, tc.grep, tc.mo);
+        if (rv) |v| {
+            if (!tc.expect_back) {
+                std.debug.print("fuck\n", .{});
+                try std.testing.expect(false);
+            }
+            std.testing.allocator.free(v);
+        } else if (tc.expect_back) {
+            std.debug.print("fuck\n", .{});
+            try std.testing.expect(false);
+        }
+    }
+}
