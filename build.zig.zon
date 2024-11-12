@@ -25,12 +25,9 @@
     .dependencies = .{
         .clap = .{
             .path = "vendor/zig-clap-0.9.1",
-            // .url = "https://github.com/Hejsil/zig-clap/archive/refs/tags/0.9.1.tar.gz",
-            // .hash = "122062d301a203d003547b414237229b09a7980095061697349f8bef41be9c30266b",
         },
         .mvzr = .{
-            .url = "https://github.com/mnemnion/mvzr/archive/refs/tags/v0.2.3.tar.gz",
-            .hash = "1220f64448b11fc6d1eb0b788d7ec65fec05bba612fb08300f324c726bbbd3c56fe2",
+            .path = "vendor/mvzr-0.2.3",
         },
     },
     .paths = .{
