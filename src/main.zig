@@ -141,3 +141,32 @@ pub fn main() !void {
 
     try process(allocator, &stdin.any(), &stdout.any(), regex, grep, matches_only);
 }
+
+test "test input/output" {
+    var in_buffer: [1024]u8 = undefined;
+    var in_stream = std.io.fixedBufferStream(&in_buffer);
+    var out_buffer: [2 * 1024]u8 = undefined;
+    var out_stream = std.io.fixedBufferStream(&out_buffer);
+
+    const tcs = [_]struct {
+        input: []const u8,
+        regex: []const u8,
+        match_count: usize,
+    }{
+        .{ .input = "Hello\n", .regex = "xxx", .match_count = 0 },
+        .{ .input = "Hello\n", .regex = "ell", .match_count = 1 },
+        .{ .input = "Hello\n", .regex = "l", .match_count = 2 },
+        .{ .input = "Hello\n", .regex = "[e|o]", .match_count = 2 },
+    };
+
+    for (tcs) |tc| {
+        try in_stream.seekTo(0);
+        try in_stream.writer().writeAll(tc.input);
+        try in_stream.seekTo(0);
+        try out_stream.seekTo(0);
+        const regex = mvzr.compile(tc.regex).?;
+        try process(std.testing.allocator, &in_stream.reader().any(), &out_stream.writer().any(), regex, false, false);
+        try std.testing.expectEqual(std.mem.count(u8, out_stream.buffer, ansi_escape), tc.match_count * 2);
+        try std.testing.expectEqual(std.mem.count(u8, out_stream.buffer, ansi_color_end), tc.match_count);
+    }
+}

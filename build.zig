@@ -32,6 +32,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    exe_unit_tests.root_module.addImport("clap", clap.module("clap"));
+    exe_unit_tests.root_module.addImport("mvzr", mvzr.module("mvzr"));
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
