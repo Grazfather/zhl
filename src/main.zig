@@ -8,6 +8,41 @@ const ansi_escape = "\x1b";
 const ansi_color_start = ansi_escape ++ "[38;5;{}m";
 const ansi_color_end = ansi_escape ++ "[0m";
 
+const OUTPUT_BUFFER_SIZE = 4 * 1024;
+
+const BufferedOutput = struct {
+    buffer: std.ArrayList(u8),
+    writer: *const std.io.AnyWriter,
+
+    pub fn init(allocator: std.mem.Allocator, writer: *const std.io.AnyWriter) !BufferedOutput {
+        return BufferedOutput{
+            .buffer = try std.ArrayList(u8).initCapacity(allocator, OUTPUT_BUFFER_SIZE),
+            .writer = writer,
+        };
+    }
+
+    pub fn deinit(self: *BufferedOutput) void {
+        self.buffer.deinit();
+    }
+
+    pub fn append(self: *BufferedOutput, content: []const u8) !void {
+        try self.buffer.appendSlice(content);
+        try self.buffer.append('\n');
+
+        // Flush if we're approaching the buffer capacity
+        if (self.buffer.items.len >= OUTPUT_BUFFER_SIZE / 2) {
+            try self.flush();
+        }
+    }
+
+    pub fn flush(self: *BufferedOutput) !void {
+        if (self.buffer.items.len > 0) {
+            _ = try self.writer.write(self.buffer.items);
+            self.buffer.clearRetainingCapacity();
+        }
+    }
+};
+
 fn colorize_line(
     allocator: std.mem.Allocator,
     line: []const u8,
@@ -60,16 +95,22 @@ fn process(
     grep: bool,
     matches_only: bool,
 ) !void {
+    var buffered_output = try BufferedOutput.init(allocator, writer);
+    defer buffered_output.deinit();
+
     // Allocate enough to read a whole line
     var buf: [16 * 1024]u8 = undefined;
 
     while (try reader.readUntilDelimiterOrEof(&buf, '\n')) |line| {
         const colorized_line = try colorize_line(allocator, line, &regex, grep, matches_only);
         if (colorized_line) |cl| {
-            _ = try writer.print("{s}\n", .{cl});
+            try buffered_output.append(cl);
             allocator.free(cl);
         }
     }
+
+    // Flush any remaining content
+    try buffered_output.flush();
 }
 
 pub fn main() !void {
