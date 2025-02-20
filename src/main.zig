@@ -11,34 +11,39 @@ const ansi_color_end = ansi_escape ++ "[0m";
 const OUTPUT_BUFFER_SIZE = 4 * 1024;
 
 const BufferedOutput = struct {
-    buffer: std.ArrayList(u8),
+    buffer: []u8,
+    pos: usize = 0,
     writer: std.io.AnyWriter,
+    allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, writer: std.io.AnyWriter) !BufferedOutput {
         return .{
-            .buffer = try std.ArrayList(u8).initCapacity(allocator, OUTPUT_BUFFER_SIZE),
+            .buffer = try allocator.alloc(u8, OUTPUT_BUFFER_SIZE),
             .writer = writer,
+            .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *BufferedOutput) void {
-        self.buffer.deinit();
+        self.allocator.free(self.buffer);
     }
 
     pub fn append(self: *BufferedOutput, content: []const u8) !void {
-        try self.buffer.appendSlice(content);
-        try self.buffer.append('\n');
-
-        // Flush if we're approaching the buffer capacity
-        if (self.buffer.items.len >= OUTPUT_BUFFER_SIZE / 2) {
+        const remaining = self.buffer.len - self.pos;
+        if (content.len + 1 > remaining) {
             try self.flush();
         }
+
+        @memcpy(self.buffer[self.pos .. self.pos + content.len], content);
+        self.pos += content.len;
+        self.buffer[self.pos] = '\n';
+        self.pos += 1;
     }
 
     pub fn flush(self: *BufferedOutput) !void {
-        if (self.buffer.items.len > 0) {
-            try self.writer.writeAll(self.buffer.items);
-            self.buffer.clearRetainingCapacity();
+        if (self.pos > 0) {
+            try self.writer.writeAll(self.buffer[0..self.pos]);
+            self.pos = 0;
         }
     }
 };
