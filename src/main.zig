@@ -12,10 +12,10 @@ const OUTPUT_BUFFER_SIZE = 4 * 1024;
 
 const BufferedOutput = struct {
     buffer: std.ArrayList(u8),
-    writer: *const std.io.AnyWriter,
+    writer: std.io.AnyWriter,
 
-    pub fn init(allocator: std.mem.Allocator, writer: *const std.io.AnyWriter) !BufferedOutput {
-        return BufferedOutput{
+    pub fn init(allocator: std.mem.Allocator, writer: std.io.AnyWriter) !BufferedOutput {
+        return .{
             .buffer = try std.ArrayList(u8).initCapacity(allocator, OUTPUT_BUFFER_SIZE),
             .writer = writer,
         };
@@ -37,7 +37,7 @@ const BufferedOutput = struct {
 
     pub fn flush(self: *BufferedOutput) !void {
         if (self.buffer.items.len > 0) {
-            _ = try self.writer.write(self.buffer.items);
+            try self.writer.writeAll(self.buffer.items);
             self.buffer.clearRetainingCapacity();
         }
     }
@@ -73,7 +73,7 @@ fn colorize_line(
 
     // If we are grepping, but this line doesn't have a match, then we are done
     if (!matched and grep) {
-        return undefined;
+        return null;
     }
 
     // Append everything after the last match
@@ -89,8 +89,8 @@ fn get_color(s: []const u8) u8 {
 
 fn process(
     allocator: std.mem.Allocator,
-    reader: *const std.io.AnyReader,
-    writer: *const std.io.AnyWriter,
+    reader: std.io.AnyReader,
+    writer: std.io.AnyWriter,
     regex: mvzr.Regex,
     grep: bool,
     matches_only: bool,
@@ -118,9 +118,10 @@ pub fn main() !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const stdout = std.io.getStdOut().writer();
+    const stderr = std.io.getStdErr().writer().any();
+    const stdout = std.io.getStdOut().writer().any();
     var br = std.io.bufferedReader(std.io.getStdIn().reader());
-    const stdin = br.reader();
+    const stdin = br.reader().any();
 
     const params = comptime clap.parseParamsComptime(
         \\-h, --help             Display this help and exit.
@@ -141,14 +142,14 @@ pub fn main() !void {
         .diagnostic = &diag,
         .allocator = gpa,
     }) catch |err| {
-        try diag.report(std.io.getStdErr().writer(), err);
-        try clap.usage(std.io.getStdErr().writer(), clap.Help, &params);
+        try diag.report(stderr, err);
+        try clap.usage(stderr, clap.Help, &params);
         return err;
     };
     defer res.deinit();
 
     if (res.args.help != 0) {
-        return clap.usage(std.io.getStdErr().writer(), clap.Help, &params);
+        return clap.usage(stderr, clap.Help, &params);
     }
 
     var grep = false;
@@ -165,7 +166,7 @@ pub fn main() !void {
         // pattern = "\\b(?:0x)?[a-fA-F\\d]{2,}\\b";
         pattern = "0x[a-fA-F0-9]{2,}|[a-fA-F0-9]{2,}";
     } else {
-        return clap.usage(std.io.getStdErr().writer(), clap.Help, &params);
+        return clap.usage(stderr, clap.Help, &params);
     }
 
     if (res.args.grep == 1) {
@@ -180,7 +181,7 @@ pub fn main() !void {
         std.process.exit(1);
     };
 
-    try process(allocator, &stdin.any(), &stdout.any(), regex, grep, matches_only);
+    try process(allocator, stdin, stdout, regex, grep, matches_only);
 }
 
 test "test input/output" {
@@ -206,7 +207,7 @@ test "test input/output" {
         try in_stream.seekTo(0);
         try out_stream.seekTo(0);
         const regex = mvzr.compile(tc.regex).?;
-        try process(std.testing.allocator, &in_stream.reader().any(), &out_stream.writer().any(), regex, false, false);
+        try process(std.testing.allocator, in_stream.reader().any(), out_stream.writer().any(), regex, false, false);
         try std.testing.expectEqual(std.mem.count(u8, out_stream.buffer, ansi_escape), tc.match_count * 2);
         try std.testing.expectEqual(std.mem.count(u8, out_stream.buffer, ansi_color_end), tc.match_count);
     }
