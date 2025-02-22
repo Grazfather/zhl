@@ -51,7 +51,7 @@ fn colorize_line(
     matches_only: bool,
 ) !?[]const u8 {
     var start: usize = 0;
-    var output = try std.ArrayList(u8).initCapacity(allocator, line.len);
+    var output = try std.ArrayList(u8).initCapacity(allocator, 2 * line.len);
     defer output.deinit();
 
     var matched = false;
