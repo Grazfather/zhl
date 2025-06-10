@@ -4,17 +4,21 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const clap = b.dependency("clap", .{});
+    const mvzr = b.dependency("mvzr", .{});
+
     const exe = b.addExecutable(.{
         .name = "zhl",
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .imports = &.{
+                .{ .name = "clap", .module = clap.module("clap") },
+                .{ .name = "mvzr", .module = mvzr.module("mvzr") },
+            },
+            .target = target,
+            .optimize = optimize,
+        }),
     });
-
-    const clap = b.dependency("clap", .{});
-    exe.root_module.addImport("clap", clap.module("clap"));
-    const mvzr = b.dependency("mvzr", .{});
-    exe.root_module.addImport("mvzr", mvzr.module("mvzr"));
 
     b.installArtifact(exe);
     const run_cmd = b.addRunArtifact(exe);
