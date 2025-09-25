@@ -49,15 +49,14 @@ const BufferedOutput = struct {
 };
 
 fn colorize_line(
-    allocator: std.mem.Allocator,
+    output: *std.ArrayList(u8),
     line: []const u8,
     regex: *const mvzr.Regex,
     grep: bool,
     matches_only: bool,
-) !?[]const u8 {
+) !bool {
+    output.clearRetainingCapacity();
     var start: usize = 0;
-    var output = try std.ArrayList(u8).initCapacity(allocator, 2 * line.len);
-    defer output.deinit();
 
     var matched = false;
     var it = regex.iterator(line);
@@ -76,15 +75,16 @@ fn colorize_line(
         start = match.end;
     }
 
-    // If we are grepping, but this line doesn't have a match, then we are done
+    // If we are grepping, but this line doesn't have a match, then we are done, and we signal that
+    // the output is invalid
     if (!matched and grep) {
-        return null;
+        return false;
     }
 
     // Append everything after the last match
     if (!matches_only)
         try output.appendSlice(line[start..]);
-    return try output.toOwnedSlice();
+    return true;
 }
 
 fn get_color(s: []const u8) u8 {
@@ -103,14 +103,16 @@ fn process(
     var buffered_output = try BufferedOutput.init(allocator, writer);
     defer buffered_output.deinit();
 
+    // Reusable buffer for colorizing lines
+    var colorize_buffer = std.ArrayList(u8).init(allocator);
+    defer colorize_buffer.deinit();
+
     // Allocate enough to read a whole line
     var buf: [16 * 1024]u8 = undefined;
 
     while (try reader.readUntilDelimiterOrEof(&buf, '\n')) |line| {
-        const colorized_line = try colorize_line(allocator, line, &regex, grep, matches_only);
-        if (colorized_line) |cl| {
-            try buffered_output.append(cl);
-            allocator.free(cl);
+        if (try colorize_line(&colorize_buffer, line, &regex, grep, matches_only)) {
+            try buffered_output.append(colorize_buffer.items);
         }
     }
 
@@ -237,17 +239,15 @@ test "test colorize functionality" {
         // No match, with matches only, returns original line
         .{ .input = "Hello\n", .regex = "xxx", .grep = false, .mo = true, .expect_back = true },
     };
+
+    var output = std.ArrayList(u8).init(std.testing.allocator);
+    defer output.deinit();
+
     for (tcs) |tc| {
         const regex = mvzr.compile(tc.regex).?;
-        const rv = try colorize_line(std.testing.allocator, tc.input, &regex, tc.grep, tc.mo);
-        if (rv) |v| {
-            if (!tc.expect_back) {
-                std.debug.print("fuck\n", .{});
-                try std.testing.expect(false);
-            }
-            std.testing.allocator.free(v);
-        } else if (tc.expect_back) {
-            std.debug.print("fuck\n", .{});
+        const has_output = try colorize_line(&output, tc.input, &regex, tc.grep, tc.mo);
+        if (has_output != tc.expect_back) {
+            std.debug.print("Expected {}, got {}\n", .{ tc.expect_back, has_output });
             try std.testing.expect(false);
         }
     }
