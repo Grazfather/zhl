@@ -5,7 +5,7 @@ const mvzr = @import("mvzr");
 const clap = @import("clap");
 
 const ansi_escape = "\x1b";
-const ansi_color_start = ansi_escape ++ "[38;5;{}m";
+const ansi_color_start = ansi_escape ++ "[38;5;";
 const ansi_color_end = ansi_escape ++ "[0m";
 
 const OUTPUT_BUFFER_SIZE = 4 * 1024;
@@ -68,7 +68,11 @@ fn colorize_line(
         if (!matches_only)
             try output.appendSlice(line[start..match.start]);
         // Append the colorized match
-        try output.writer().print(ansi_color_start, .{color});
+        try output.appendSlice(ansi_color_start);
+        var buf: [3]u8 = undefined; // u8 max is 255, so max 3 digits
+        const len = std.fmt.formatIntBuf(&buf, color, 10, .lower, .{});
+        try output.appendSlice(buf[0..len]);
+        try output.appendSlice("m");
         try output.appendSlice(match.slice);
         try output.appendSlice(ansi_color_end);
         // Update the cursor to the end of the match
