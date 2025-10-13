@@ -8,48 +8,8 @@ const ansi_escape = "\x1b";
 const ansi_color_start = ansi_escape ++ "[38;5;";
 const ansi_color_end = ansi_escape ++ "[0m";
 
-const OUTPUT_BUFFER_SIZE = 4 * 1024;
-
-const BufferedOutput = struct {
-    buffer: []u8,
-    pos: usize = 0,
-    writer: std.io.AnyWriter,
-    allocator: std.mem.Allocator,
-
-    pub fn init(allocator: std.mem.Allocator, writer: std.io.AnyWriter) !BufferedOutput {
-        return .{
-            .buffer = try allocator.alloc(u8, OUTPUT_BUFFER_SIZE),
-            .writer = writer,
-            .allocator = allocator,
-        };
-    }
-
-    pub fn deinit(self: *BufferedOutput) void {
-        self.allocator.free(self.buffer);
-    }
-
-    pub fn append(self: *BufferedOutput, content: []const u8) !void {
-        const remaining = self.buffer.len - self.pos;
-        if (content.len + 1 > remaining) {
-            try self.flush();
-        }
-
-        @memcpy(self.buffer[self.pos .. self.pos + content.len], content);
-        self.pos += content.len;
-        self.buffer[self.pos] = '\n';
-        self.pos += 1;
-    }
-
-    pub fn flush(self: *BufferedOutput) !void {
-        if (self.pos > 0) {
-            try self.writer.writeAll(self.buffer[0..self.pos]);
-            self.pos = 0;
-        }
-    }
-};
-
 fn colorize_line(
-    output: *std.ArrayList(u8),
+    output: *std.array_list.Managed(u8),
     line: []const u8,
     regex: *const mvzr.Regex,
     grep: bool,
@@ -70,7 +30,7 @@ fn colorize_line(
         // Append the colorized match
         try output.appendSlice(ansi_color_start);
         var buf: [3]u8 = undefined; // u8 max is 255, so max 3 digits
-        const len = std.fmt.formatIntBuf(&buf, color, 10, .lower, .{});
+        const len = std.fmt.printInt(&buf, color, 10, .lower, .{});
         try output.appendSlice(buf[0..len]);
         try output.appendSlice("m");
         try output.appendSlice(match.slice);
@@ -98,30 +58,36 @@ fn get_color(s: []const u8) u8 {
 
 fn process(
     allocator: std.mem.Allocator,
-    reader: std.io.AnyReader,
-    writer: std.io.AnyWriter,
+    reader: *std.io.Reader,
+    writer: *std.io.Writer,
     regex: mvzr.Regex,
     grep: bool,
     matches_only: bool,
 ) !void {
-    var buffered_output = try BufferedOutput.init(allocator, writer);
-    defer buffered_output.deinit();
-
     // Reusable buffer for colorizing lines
-    var colorize_buffer = std.ArrayList(u8).init(allocator);
+    var colorize_buffer = std.array_list.Managed(u8).init(allocator);
     defer colorize_buffer.deinit();
 
-    // Allocate enough to read a whole line
-    var buf: [16 * 1024]u8 = undefined;
+    var eof: bool = false;
+    while (!eof) {
+        const line = reader.takeDelimiterInclusive('\n') catch |err| blk: switch (err) {
+            error.EndOfStream => {
+                eof = true;
+                break :blk reader.buffered();
+            },
+            else => |e| return e,
+        };
 
-    while (try reader.readUntilDelimiterOrEof(&buf, '\n')) |line| {
+        // If the input actually ends with a newline, then this will be an empty slice, so we break
+        if (line.len == 0) break;
+
         if (try colorize_line(&colorize_buffer, line, &regex, grep, matches_only)) {
-            try buffered_output.append(colorize_buffer.items);
+            _ = try writer.write(colorize_buffer.items);
         }
     }
 
     // Flush any remaining content
-    try buffered_output.flush();
+    try writer.flush();
 }
 
 pub fn main() !void {
@@ -129,10 +95,11 @@ pub fn main() !void {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const stderr = std.io.getStdErr().writer().any();
-    const stdout = std.io.getStdOut().writer().any();
-    var br = std.io.bufferedReader(std.io.getStdIn().reader());
-    const stdin = br.reader().any();
+    var stderr_writer = std.fs.File.stderr().writer(&.{});
+    var buffer: [1048576]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&buffer);
+    var inbuf: [1048576]u8 = undefined;
+    var stdin_reader = std.fs.File.stdin().reader(&inbuf);
 
     const params = comptime clap.parseParamsComptime(
         \\-h, --help             Display this help and exit.
@@ -153,14 +120,14 @@ pub fn main() !void {
         .diagnostic = &diag,
         .allocator = gpa,
     }) catch |err| {
-        try diag.report(stderr, err);
-        try clap.usage(stderr, clap.Help, &params);
+        try diag.report(&stderr_writer.interface, err);
+        try clap.usage(&stderr_writer.interface, clap.Help, &params);
         return err;
     };
     defer res.deinit();
 
     if (res.args.help != 0) {
-        return clap.usage(stderr, clap.Help, &params);
+        return clap.usage(&stderr_writer.interface, clap.Help, &params);
     }
 
     var grep = false;
@@ -177,7 +144,7 @@ pub fn main() !void {
         // pattern = "\\b(?:0x)?[a-fA-F\\d]{2,}\\b";
         pattern = "0x[a-fA-F0-9]{2,}|[a-fA-F0-9]{2,}";
     } else {
-        return clap.usage(stderr, clap.Help, &params);
+        return clap.usage(&stderr_writer.interface, clap.Help, &params);
     }
 
     if (res.args.grep == 1) {
@@ -192,14 +159,12 @@ pub fn main() !void {
         std.process.exit(1);
     };
 
-    try process(allocator, stdin, stdout, regex, grep, matches_only);
+    try process(allocator, &stdin_reader.interface, &stdout_writer.interface, regex, grep, matches_only);
 }
 
 test "test input/output" {
-    var in_buffer: [1024]u8 = undefined;
-    var in_stream = std.io.fixedBufferStream(&in_buffer);
     var out_buffer: [2 * 1024]u8 = undefined;
-    var out_stream = std.io.fixedBufferStream(&out_buffer);
+    var out_stream = std.io.Writer.fixed(&out_buffer);
 
     const tcs = [_]struct {
         input: []const u8,
@@ -213,12 +178,10 @@ test "test input/output" {
     };
 
     for (tcs) |tc| {
-        try in_stream.seekTo(0);
-        try in_stream.writer().writeAll(tc.input);
-        try in_stream.seekTo(0);
-        try out_stream.seekTo(0);
+        var in_stream = std.io.Reader.fixed(tc.input);
+        out_stream = .fixed(&out_buffer);
         const regex = mvzr.compile(tc.regex).?;
-        try process(std.testing.allocator, in_stream.reader().any(), out_stream.writer().any(), regex, false, false);
+        try process(std.testing.allocator, &in_stream, &out_stream, regex, false, false);
         try std.testing.expectEqual(std.mem.count(u8, out_stream.buffer, ansi_escape), tc.match_count * 2);
         try std.testing.expectEqual(std.mem.count(u8, out_stream.buffer, ansi_color_end), tc.match_count);
     }
@@ -244,7 +207,7 @@ test "test colorize functionality" {
         .{ .input = "Hello\n", .regex = "xxx", .grep = false, .mo = true, .expect_back = true },
     };
 
-    var output = std.ArrayList(u8).init(std.testing.allocator);
+    var output = std.array_list.Managed(u8).init(std.testing.allocator);
     defer output.deinit();
 
     for (tcs) |tc| {
