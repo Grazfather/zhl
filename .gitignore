@@ -1,2 +1,11 @@
 .zig-cache
 zig-out
+
+# Benchmark files
+bench-tmp/
+benchmark-results/
+ghl
+zhl-*
+benchmark*.csv
+benchmark*.json
+benchmark*.md
