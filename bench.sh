@@ -1005,7 +1005,7 @@ EOF
 # ============================================================================
 
 parse_arguments() {
-    local suites=()
+    SUITES=()
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -1050,7 +1050,7 @@ parse_arguments() {
                 shift 2
                 ;;
             quick|compare|patterns|scenarios|realworld|comprehensive|all)
-                suites+=("$1")
+                SUITES+=("$1")
                 shift
                 ;;
             *)
@@ -1062,11 +1062,9 @@ parse_arguments() {
     done
 
     # Default to quick if no suites specified
-    if [[ ${#suites[@]} -eq 0 ]]; then
-        suites=("quick")
+    if [[ ${#SUITES[@]} -eq 0 ]]; then
+        SUITES=("quick")
     fi
-
-    printf '%s\n' "${suites[@]}"
 }
 
 main() {
@@ -1095,15 +1093,15 @@ main() {
     echo "╚════════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 
-    # Parse arguments and get suite list
-    local suites=($(parse_arguments "$@"))
+    # Parse arguments (sets SUITES array and config globals)
+    parse_arguments "$@"
 
     log_info "Configuration:"
     echo "  Runs: $RUNS"
     echo "  Warmup: $WARMUP"
     echo "  Output: $OUTPUT_DIR"
     echo "  Build modes: $BUILD_MODES"
-    echo "  Suites: ${suites[*]}"
+    echo "  Suites: ${SUITES[*]}"
     echo ""
 
     # Check dependencies
@@ -1117,7 +1115,7 @@ main() {
     build_all
 
     # Run selected suites
-    for suite in "${suites[@]}"; do
+    for suite in "${SUITES[@]}"; do
         case "$suite" in
             quick)
                 suite_quick
