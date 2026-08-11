@@ -58,8 +58,8 @@ fn get_color(s: []const u8) u8 {
 
 fn process(
     allocator: std.mem.Allocator,
-    reader: *std.io.Reader,
-    writer: *std.io.Writer,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
     regex: mvzr.Regex,
     grep: bool,
     matches_only: bool,
@@ -90,16 +90,18 @@ fn process(
     try writer.flush();
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stderr_writer = std.fs.File.stderr().writer(&.{});
+    var stderr_writer: std.Io.File.Writer = .init(.stderr(), io, &.{});
     var buffer: [1048576]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&buffer);
+    var stdout_writer: std.Io.File.Writer = .init(.stdout(), io, &buffer);
     var inbuf: [1048576]u8 = undefined;
-    var stdin_reader = std.fs.File.stdin().reader(&inbuf);
+    var stdin_reader: std.Io.File.Reader = .init(.stdin(), io, &inbuf);
 
     const params = comptime clap.parseParamsComptime(
         \\-h, --help             Display this help and exit.
@@ -112,11 +114,9 @@ pub fn main() !void {
         \\
     );
 
-    var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
-    const gpa = gpa_state.allocator();
-    defer _ = gpa_state.deinit();
+    const gpa = init.gpa;
     var diag = clap.Diagnostic{};
-    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{
+    var res = clap.parse(clap.Help, &params, clap.parsers.default, init.minimal.args, .{
         .diagnostic = &diag,
         .allocator = gpa,
     }) catch |err| {
@@ -164,7 +164,7 @@ pub fn main() !void {
 
 test "test input/output" {
     var out_buffer: [2 * 1024]u8 = undefined;
-    var out_stream = std.io.Writer.fixed(&out_buffer);
+    var out_stream = std.Io.Writer.fixed(&out_buffer);
 
     const tcs = [_]struct {
         input: []const u8,
@@ -178,7 +178,7 @@ test "test input/output" {
     };
 
     for (tcs) |tc| {
-        var in_stream = std.io.Reader.fixed(tc.input);
+        var in_stream = std.Io.Reader.fixed(tc.input);
         out_stream = .fixed(&out_buffer);
         const regex = mvzr.compile(tc.regex).?;
         try process(std.testing.allocator, &in_stream, &out_stream, regex, false, false);
