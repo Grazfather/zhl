@@ -1,72 +1,73 @@
 const std = @import("std");
-const Crc = std.hash.crc.Crc16DectX;
 
 const mvzr = @import("mvzr");
 const clap = @import("clap");
 
 const ansi_escape = "\x1b";
-const ansi_color_start = ansi_escape ++ "[38;5;";
 const ansi_color_end = ansi_escape ++ "[0m";
 
+/// Comptime-generated lookup table of 200 precomputed ANSI color escape sequences.
+/// Index 0 = color 16 ("\x1b[38;5;16m"), index 199 = color 215 ("\x1b[38;5;215m").
+const color_table: [200][]const u8 = blk: {
+    @setEvalBranchQuota(200 * 1000);
+    var table: [200][]const u8 = undefined;
+    for (0..200) |i| {
+        table[i] = std.fmt.comptimePrint("\x1b[38;5;{d}m", .{i + 16});
+    }
+    break :blk table;
+};
+
+fn append(buf: []u8, pos: usize, data: []const u8) usize {
+    const end = pos + data.len;
+    @memcpy(buf[pos..end], data);
+    return end;
+}
+
 fn colorize_line(
-    output: *std.array_list.Managed(u8),
+    buf: []u8,
     line: []const u8,
     regex: *const mvzr.Regex,
     grep: bool,
     matches_only: bool,
-) !bool {
-    output.clearRetainingCapacity();
+) usize {
     var start: usize = 0;
-
+    var pos: usize = 0;
     var matched = false;
+
     var it = regex.iterator(line);
     while (it.next()) |match| {
         matched = true;
-        // Get the color for the current match
-        const color = get_color(match.slice);
-        // Append everything from the end of the last match to the start of the current
         if (!matches_only)
-            try output.appendSlice(line[start..match.start]);
-        // Append the colorized match
-        try output.appendSlice(ansi_color_start);
-        var buf: [3]u8 = undefined; // u8 max is 255, so max 3 digits
-        const len = std.fmt.printInt(&buf, color, 10, .lower, .{});
-        try output.appendSlice(buf[0..len]);
-        try output.appendSlice("m");
-        try output.appendSlice(match.slice);
-        try output.appendSlice(ansi_color_end);
-        // Update the cursor to the end of the match
+            pos = append(buf, pos, line[start..match.start]);
+        const color_index = get_color(match.slice);
+        pos = append(buf, pos, color_table[color_index]);
+        pos = append(buf, pos, match.slice);
+        pos = append(buf, pos, ansi_color_end);
         start = match.end;
     }
 
-    // If we are grepping, but this line doesn't have a match, then we are done, and we signal that
-    // the output is invalid
-    if (!matched and grep) {
-        return false;
-    }
+    if (!matched and grep) return 0;
 
-    // Append everything after the last match
     if (!matches_only)
-        try output.appendSlice(line[start..]);
-    return true;
+        pos = append(buf, pos, line[start..]);
+
+    return pos;
 }
 
 fn get_color(s: []const u8) u8 {
     const hash = std.hash.crc.Crc16DectX.hash(s);
-    return @as(u8, @truncate(hash)) % 200 + 16;
+    return @as(u8, @truncate(hash)) % 200;
 }
 
 fn process(
-    allocator: std.mem.Allocator,
     reader: *std.Io.Reader,
     writer: *std.Io.Writer,
     regex: mvzr.Regex,
     grep: bool,
     matches_only: bool,
 ) !void {
-    // Reusable buffer for colorizing lines
-    var colorize_buffer = std.array_list.Managed(u8).init(allocator);
-    defer colorize_buffer.deinit();
+    // Stack buffer for colorized output — generous size for long lines with many matches
+    var colorize_buf: [256 * 1024]u8 = undefined;
 
     var eof: bool = false;
     while (!eof) {
@@ -81,8 +82,9 @@ fn process(
         // If the input actually ends with a newline, then this will be an empty slice, so we break
         if (line.len == 0) break;
 
-        if (try colorize_line(&colorize_buffer, line, &regex, grep, matches_only)) {
-            _ = try writer.write(colorize_buffer.items);
+        const len = colorize_line(&colorize_buf, line, &regex, grep, matches_only);
+        if (len > 0) {
+            try writer.writeAll(colorize_buf[0..len]);
         }
     }
 
@@ -92,10 +94,6 @@ fn process(
 
 pub fn main(init: std.process.Init) !void {
     const io = init.io;
-
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
 
     var stderr_writer: std.Io.File.Writer = .init(.stderr(), io, &.{});
     var buffer: [1048576]u8 = undefined;
@@ -159,7 +157,7 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     };
 
-    try process(allocator, &stdin_reader.interface, &stdout_writer.interface, regex, grep, matches_only);
+    try process(&stdin_reader.interface, &stdout_writer.interface, regex, grep, matches_only);
 }
 
 test "test input/output" {
@@ -181,7 +179,7 @@ test "test input/output" {
         var in_stream = std.Io.Reader.fixed(tc.input);
         out_stream = .fixed(&out_buffer);
         const regex = mvzr.compile(tc.regex).?;
-        try process(std.testing.allocator, &in_stream, &out_stream, regex, false, false);
+        try process(&in_stream, &out_stream, regex, false, false);
         try std.testing.expectEqual(std.mem.count(u8, out_stream.buffer, ansi_escape), tc.match_count * 2);
         try std.testing.expectEqual(std.mem.count(u8, out_stream.buffer, ansi_color_end), tc.match_count);
     }
@@ -193,28 +191,29 @@ test "test colorize functionality" {
         regex: []const u8,
         grep: bool,
         mo: bool,
-        expect_back: bool,
+        expect_output: bool,
     }{
         // No match, but no grep or matches only, returns original line
-        .{ .input = "Hello\n", .regex = "xxx", .grep = false, .mo = false, .expect_back = true },
+        .{ .input = "Hello\n", .regex = "xxx", .grep = false, .mo = false, .expect_output = true },
         // Match, with grep, returns colorized line
-        .{ .input = "Hello\n", .regex = "l", .grep = true, .mo = false, .expect_back = true },
+        .{ .input = "Hello\n", .regex = "l", .grep = true, .mo = false, .expect_output = true },
         // Match, with match only, returns colorized match
-        .{ .input = "Hello\n", .regex = "l", .grep = false, .mo = true, .expect_back = true },
+        .{ .input = "Hello\n", .regex = "l", .grep = false, .mo = true, .expect_output = true },
         // No match, with grep, returns nothing
-        .{ .input = "Hello\n", .regex = "xxx", .grep = true, .mo = false, .expect_back = false },
-        // No match, with matches only, returns original line
-        .{ .input = "Hello\n", .regex = "xxx", .grep = false, .mo = true, .expect_back = true },
+        .{ .input = "Hello\n", .regex = "xxx", .grep = true, .mo = false, .expect_output = false },
+        // No match, with matches only (implies grep), returns nothing
+        .{ .input = "Hello\n", .regex = "xxx", .grep = true, .mo = true, .expect_output = false },
     };
 
-    var output = std.array_list.Managed(u8).init(std.testing.allocator);
-    defer output.deinit();
-
     for (tcs) |tc| {
+        var out_buffer: [2 * 1024]u8 = undefined;
+        var out_stream = std.Io.Writer.fixed(&out_buffer);
+        var in_stream = std.Io.Reader.fixed(tc.input);
         const regex = mvzr.compile(tc.regex).?;
-        const has_output = try colorize_line(&output, tc.input, &regex, tc.grep, tc.mo);
-        if (has_output != tc.expect_back) {
-            std.debug.print("Expected {}, got {}\n", .{ tc.expect_back, has_output });
+        try process(&in_stream, &out_stream, regex, tc.grep, tc.mo);
+        const has_output = out_stream.end > 0;
+        if (has_output != tc.expect_output) {
+            std.debug.print("Expected output={}, got output={}\n", .{ tc.expect_output, has_output });
             try std.testing.expect(false);
         }
     }
